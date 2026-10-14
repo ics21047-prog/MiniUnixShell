@@ -5,42 +5,38 @@
 
 #include <stddef.h>
 
-enum redirect_type {
-	REDIRECT_INPUT,
-	REDIRECT_OUTPUT,
-	REDIRECT_APPEND
-};
+enum redirect_type { REDIRECT_INPUT, REDIRECT_OUTPUT, REDIRECT_APPEND };
 
 struct redirect {
-	enum redirect_type type;
-	char *path;
+  enum redirect_type type;
+  char *path;
 };
 
 struct command {
-	char **argv;
-	size_t argc;
-	size_t argv_capacity;
+  char **argv;
+  size_t argc;
+  size_t argv_capacity;
 
-	struct redirect *redirects;
-	size_t redirect_count;
-	size_t redirect_capacity;
+  struct redirect *redirects;
+  size_t redirect_count;
+  size_t redirect_capacity;
 };
 
 struct pipeline {
-	struct command *commands;
-	size_t command_count;
-	size_t command_capacity;
-	int background;
+  struct command *commands;
+  size_t command_count;
+  size_t command_capacity;
+  int background;
 };
 
 enum parse_error {
-	PARSE_SUCCESS = 0,
-	PARSE_ERROR_EMPTY_INPUT = -1,
-	PARSE_ERROR_EMPTY_COMMAND = -2,
-	PARSE_ERROR_UNTERMINATED_QUOTE = -3,
-	PARSE_ERROR_MISSING_REDIRECT_TARGET = -4,
-	PARSE_ERROR_UNEXPECTED_TOKEN = -5,
-	PARSE_ERROR_OUT_OF_MEMORY = -6
+  PARSE_SUCCESS = 0,
+  PARSE_ERROR_EMPTY_INPUT = -1,
+  PARSE_ERROR_EMPTY_COMMAND = -2,
+  PARSE_ERROR_UNTERMINATED_QUOTE = -3,
+  PARSE_ERROR_MISSING_REDIRECT_TARGET = -4,
+  PARSE_ERROR_UNEXPECTED_TOKEN = -5,
+  PARSE_ERROR_OUT_OF_MEMORY = -6
 };
 
 /**
