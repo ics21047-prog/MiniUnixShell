@@ -247,10 +247,8 @@ static void setPWD(void) {
 // Handling Case where cd is called
 // returns status -1 if failed, 0 success
 static int internal_command_cd(const struct command *command) {
+  int status = 0;
   char path[PATH_BUFFER];
-  if (getcwd(path, sizeof(path)) == NULL) {
-    perror("getcwd");
-  }
 
   switch (command->argc) {
   case 1: {
@@ -271,6 +269,7 @@ static int internal_command_cd(const struct command *command) {
     setPWD();
     return 0;
   default:
+    errno = E2BIG;
     return -1;
   }
 }
