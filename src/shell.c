@@ -7,10 +7,11 @@
  * Lastname, iis...
  */
 
+#include "parser.h"
 #include <errno.h>
 #include <fcntl.h>
-// #include <signal.h>
-#include "parser.h"
+#include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,13 +44,13 @@ static int read_line(char *buffer, size_t size);
 static int execute_pipeline(const struct pipeline *pipeline);
 static void init_bg_jobs(struct job *jobs);
 static void add_bg_job(const pid_t pid);
-static void remove_bg_job(const pid_t pid);
+static void remove_bg_job(int pid);
 static void reap_bg_jobs(void);
 
 // Add the prototypes of helper funcitons here..
+static void handle_sigchld(int);
 static void setPWD(void);
 static int internal_command_cd(const struct command *command);
-
 /**
  * @brief Run the minish command interpreter.
  *
@@ -63,6 +64,15 @@ int main(void) {
 
   // Install the required signal handlers here.
   // Add your code here.
+  struct sigaction chld_action;
+  memset(&chld_action, 0, sizeof(chld_action));
+  chld_action.sa_handler = handle_sigchld;
+  sigemptyset(&chld_action.sa_mask);
+  chld_action.sa_flags = SA_RESTART;
+
+  if (sigaction(SIGCHLD, &chld_action, NULL) == -1) {
+    perror("sigaction");
+  }
 
   // The main shell loop.
   for (;;) {
@@ -159,17 +169,25 @@ void add_bg_job(const pid_t pid) {
     // Find the first position in the array with active == 0 and add the
     // new job there. Then call break to exit the loop.
     // Add your code here...
+    if (jobs[i].active == 0) {
+      jobs[i].pid = pid;
+      jobs[i].active = 1;
+      return;
+    }
   }
 }
 
-void remove_bg_job(const pid_t pid) {
+void remove_bg_job(int pid) {
   int i;
-
+  // Find the first position in the array where its pid matches with the
+  // pid parameter of the function and then clean it by setting pid to
+  // -1 and active to 0.
+  // Add your code here...
   for (i = 0; i < MAX_JOBS; i++) {
-    // Find the first position in the array where its pid matches with the
-    // pid parameter of the function and then clean it by setting pid to
-    // -1 and active to 0.
-    // Add your code here...
+    if (pid == jobs[i].pid) {
+      jobs[i].pid = -1;
+      jobs[i].active = 0;
+    }
   }
 }
 
@@ -186,6 +204,13 @@ void reap_bg_jobs(void) {
     // properly to remove this process from the jobs array.
 
     // Add your code here...
+    if (!jobs[i].active)
+      continue;
+    pid = waitpid(jobs[i].pid, &status, WNOHANG);
+    if (pid > 0) {
+      jobs[i].pid = -1;
+      jobs[i].active = 0;
+    }
   }
 }
 
@@ -211,8 +236,8 @@ static int execute_pipeline(const struct pipeline *pipeline) {
       pipeline_free((struct pipeline *)pipeline);
       exit(0);
     } else if (!strncmp(pipeline->commands[0].argv[0], "cd", 3)) {
-      int status = internal_command_cd(&pipeline->commands[0]);
-      return status;
+      result = internal_command_cd(&pipeline->commands[0]);
+      return result;
     }
   }
 
@@ -230,8 +255,32 @@ static int execute_pipeline(const struct pipeline *pipeline) {
   // E.g., cmd1 | cmd2 : 2 commands.
   // E.g., cmd1 : 1 command.
 
-  // Add your code here...
+  // Add your code here... This implementation can execute only one command for
+  // now
+  pid_t pid;
+  pid = fork();
+  if (pid == -1) {
+    return -1;
+  }
 
+  if (pid == 0) {
+    result = execvp(pipeline->commands[0].argv[0], pipeline->commands[0].argv);
+    if (result == -1)
+      perror("execvp:");
+    exit(EXIT_FAILURE);
+  }
+
+  if (pipeline->background == 1) {
+    add_bg_job(pid);
+  }
+
+  if (pipeline->background != 1) {
+    int child_status = 0;
+    if (waitpid(pid, &child_status, 0) == -1)
+      result = -1;
+    if (child_status == EXIT_FAILURE)
+      fprintf(stderr, "External Command Failed!!!!\n");
+  }
   free(pids);
   return result;
 }
@@ -272,4 +321,13 @@ static int internal_command_cd(const struct command *command) {
     errno = E2BIG;
     return -1;
   }
+}
+
+static void handle_sigchld(int signal) {
+  int saved_errno = errno;
+
+  if (signal == SIGCHLD)
+    reap_bg_jobs();
+
+  errno = saved_errno;
 }
