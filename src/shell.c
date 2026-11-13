@@ -64,7 +64,9 @@ int main(void) {
 
   // Install the required signal handlers here.
   // Add your code here.
-  struct sigaction chld_action;
+  struct sigaction chld_action, int_action;
+
+  // implementing the signal handler for termination of background jobs
   memset(&chld_action, 0, sizeof(chld_action));
   chld_action.sa_handler = handle_sigchld;
   sigemptyset(&chld_action.sa_mask);
@@ -72,6 +74,14 @@ int main(void) {
 
   if (sigaction(SIGCHLD, &chld_action, NULL) == -1) {
     perror("sigaction");
+  }
+  // implementing the signal handler for SIGINT
+  memset(&int_action, 0, sizeof(int_action));
+  int_action.sa_handler = SIG_IGN;
+  sigemptyset(&int_action.sa_mask);
+  if (sigaction(SIGINT, &int_action, NULL) == -1) {
+    perror("sigaction");
+    return 1;
   }
 
   // The main shell loop.
@@ -264,6 +274,13 @@ static int execute_pipeline(const struct pipeline *pipeline) {
   }
 
   if (pid == 0) {
+    if (pipeline->background != 1) {
+      struct sigaction dfl;
+      memset(&dfl, 0, sizeof(dfl));
+      dfl.sa_handler = SIG_DFL;
+      sigemptyset(&dfl.sa_mask);
+      sigaction(SIGINT, &dfl, NULL);
+    }
     result = execvp(pipeline->commands[0].argv[0], pipeline->commands[0].argv);
     if (result == -1)
       perror("execvp:");
