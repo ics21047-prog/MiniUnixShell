@@ -51,6 +51,8 @@ static void reap_bg_jobs(void);
 static void handle_sigchld(int);
 static void setPWD(void);
 static int internal_command_cd(const struct command *command);
+static int check_redirections(const struct command *command);
+static void execute_command(const struct command *command);
 /**
  * @brief Run the minish command interpreter.
  *
@@ -267,37 +269,87 @@ static int execute_pipeline(const struct pipeline *pipeline) {
 
   // Add your code here... This implementation can execute only one command for
   // now
-  pid_t pid;
-  pid = fork();
-  if (pid == -1) {
-    return -1;
-  }
+  /// Initialize the pipes
+  size_t num_of_pipes = pipeline->command_count - 1;
+  int (*pipeID)[2] = malloc(num_of_pipes * sizeof(*pipeID));
 
-  if (pid == 0) {
-    if (pipeline->background != 1) {
-      struct sigaction dfl;
-      memset(&dfl, 0, sizeof(dfl));
-      dfl.sa_handler = SIG_DFL;
-      sigemptyset(&dfl.sa_mask);
-      sigaction(SIGINT, &dfl, NULL);
+  for (size_t i = 0; i < num_of_pipes; i++) {
+    pipe(pipeID[i]);
+  }
+  for (size_t command_index = 0; command_index < pipeline->command_count;
+       command_index++) {
+
+    pids[command_index] = fork();
+    if (pids[command_index] == -1) {
+      return -1;
     }
-    result = execvp(pipeline->commands[0].argv[0], pipeline->commands[0].argv);
-    if (result == -1)
-      perror("execvp:");
-    exit(EXIT_FAILURE);
-  }
 
-  if (pipeline->background == 1) {
-    add_bg_job(pid);
-  }
+    if (pids[command_index] == 0) {
+      // Changing the SIGINT handler for background
+      if (pipeline->background != 1) {
+        struct sigaction dfl;
+        memset(&dfl, 0, sizeof(dfl));
+        dfl.sa_handler = SIG_DFL;
+        sigemptyset(&dfl.sa_mask);
+        sigaction(SIGINT, &dfl, NULL);
+      }
 
+      // checking case where there is no pipe
+      if (pipeline->command_count == 1) {
+        execute_command(&pipeline->commands[command_index]);
+      }
+
+      // Changing the file descriptors for the pipe
+      if (command_index == 0) {
+        close(pipeID[command_index][0]);
+        if (dup2(pipeID[command_index][1], STDOUT_FILENO) == -1) {
+          perror("dup2");
+          _exit(EXIT_FAILURE);
+        }
+      } else if (command_index == pipeline->command_count - 1) {
+        if (dup2(pipeID[command_index - 1][0], STDIN_FILENO) == -1) {
+          perror("dup2");
+          _exit(EXIT_FAILURE);
+        }
+      } else {
+        if (dup2(pipeID[command_index][1], STDOUT_FILENO) == -1 ||
+            dup2(pipeID[command_index - 1][0], STDIN_FILENO) == -1) {
+          perror("dup2");
+          _exit(EXIT_FAILURE);
+        }
+      }
+      for (size_t i = 0; i < num_of_pipes; i++) {
+        close(pipeID[i][0]);
+        close(pipeID[i][1]);
+      }
+
+      // execute_commands handles redirections and the final execution
+      // of the command
+      execute_command(&pipeline->commands[command_index]);
+    }
+    // Adding the background process to jobs array
+    // If the if the pipeline is not a background job we need to wait
+    if (pipeline->background == 1) {
+      add_bg_job(pids[command_index]);
+    }
+  }
+  // closing all the pipes
+  for (size_t i = 0; i < num_of_pipes; i++) {
+    close(pipeID[i][0]);
+    close(pipeID[i][1]);
+  }
+  // if the pipeline is not in the background the the parent needs to wait
+  // for the children to finish
   if (pipeline->background != 1) {
     int child_status = 0;
-    if (waitpid(pid, &child_status, 0) == -1)
-      result = -1;
-    if (child_status == EXIT_FAILURE)
-      fprintf(stderr, "External Command Failed!!!!\n");
+    for (size_t i = 0; i < pipeline->command_count; i++) {
+      if (waitpid(pids[i], &child_status, 0) == -1)
+        result = -1;
+      if (child_status == EXIT_FAILURE)
+        result = -1;
+    }
   }
+  free(pipeID);
   free(pids);
   return result;
 }
@@ -347,4 +399,66 @@ static void handle_sigchld(int signal) {
     reap_bg_jobs();
 
   errno = saved_errno;
+}
+
+static int check_redirections(const struct command *command) {
+  for (size_t i = 0; i < command->redirect_count; i++) {
+    const struct redirect *red = &command->redirects[i];
+    switch (red->type) {
+      int fd;
+    case REDIRECT_INPUT:
+      fd = open(red->path, O_RDONLY);
+      if (fd == -1)
+        return -1;
+      if (dup2(fd, STDIN_FILENO) == -1) {
+        close(fd);
+        return -1;
+      }
+      if (fd != STDIN_FILENO)
+        close(fd);
+      break;
+    case REDIRECT_OUTPUT:
+      fd = open(red->path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd == -1)
+        return -1;
+
+      if (dup2(fd, STDOUT_FILENO) == -1) {
+        close(fd);
+        return -1;
+      }
+      if (fd != STDOUT_FILENO)
+        close(fd); // we do not need fid any more (we can access the file
+                   // through 1).
+      break;
+    case REDIRECT_APPEND:
+      fd = open(red->path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      if (fd == -1)
+        return -1;
+
+      if (dup2(fd, STDOUT_FILENO) == -1) {
+        close(fd);
+        return -1;
+      }
+      if (fd != STDOUT_FILENO)
+        close(fd); // we do not need fid any more (we can access the file
+                   // through 1).
+      break;
+    default:
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static void execute_command(const struct command *command) {
+  if (command->redirect_count > 0) {
+    if (check_redirections(command) == -1) {
+      perror("minish:redirection");
+      _exit(EXIT_FAILURE);
+    }
+  }
+
+  if (execvp(command->argv[0], command->argv) == -1)
+    perror("execvp:");
+  _exit(EXIT_FAILURE);
 }
