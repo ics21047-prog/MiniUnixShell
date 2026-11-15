@@ -8,6 +8,7 @@ LDLIBS :=
 TARGET := build/minish
 
 SRC := \
+	src/helper.c \
 	src/parser.c \
 	src/shell.c
 
