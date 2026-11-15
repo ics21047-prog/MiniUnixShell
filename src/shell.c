@@ -3,7 +3,7 @@
  * Minish shell.
  *
  * Add The name of the first team member here in the form Surname Lastname,
- * iis... Add The name of the first team member here in the form Surname
+ * iis... Add The name f the first team member here in the form Surname
  * Lastname, iis...
  */
 
@@ -11,6 +11,7 @@
 #include "errno.h"
 #include "helper.h"
 #include "parser.h"
+#include <stdlib.h>
 
 // Add the prototypes of helper funcitons here..
 /////HELPER FUNCTION AT helper.c
@@ -198,7 +199,8 @@ static int execute_pipeline(const struct pipeline *pipeline) {
 
   // Add your code here...
   if (pipeline->command_count == 1) {
-    if (!strncmp(pipeline->commands[0].argv[0], "exit", 5)) {
+    if (!strncmp(pipeline->commands[0].argv[0], "exit", 5) &&
+        pipeline->commands[0].argc == 1) {
       pipeline_free((struct pipeline *)pipeline);
       exit(0);
     } else if (!strncmp(pipeline->commands[0].argv[0], "cd", 3)) {
@@ -226,16 +228,30 @@ static int execute_pipeline(const struct pipeline *pipeline) {
   /// Initialize the pipes
   size_t num_of_pipes = pipeline->command_count - 1;
   int (*pipeID)[2] = malloc(num_of_pipes * sizeof(*pipeID));
-
-  for (size_t i = 0; i < num_of_pipes; i++) {
-    pipe(pipeID[i]);
+  if (num_of_pipes > 0 && pipeID == NULL) {
+    free(pids);
+    return -1;
   }
+
+  size_t num_of_pipes_opened = initialize_pipes(
+      pipeID, num_of_pipes); // 0 if all opened , > 0 if any failed
+  if (num_of_pipes_opened != num_of_pipes) {
+    close_pipes(pipeID, num_of_pipes_opened);
+    free(pids);
+    free(pipeID);
+    return -1;
+  }
+
+  // Variable for holding successfull forks so i can wait for those pids
+  int fork_success = pipeline->command_count;
   for (size_t command_index = 0; command_index < pipeline->command_count;
        command_index++) {
 
     pids[command_index] = fork();
     if (pids[command_index] == -1) {
-      return -1;
+      result = -1;
+      fork_success = command_index;
+      break;
     }
 
     if (pids[command_index] == 0) {
@@ -247,39 +263,9 @@ static int execute_pipeline(const struct pipeline *pipeline) {
           _exit(EXIT_FAILURE);
         }
       }
-
-      // checking case where there is no pipe
-      if (pipeline->command_count == 1) {
-        execute_command(&pipeline->commands[command_index]);
-      }
-
-      // Changing the file descriptors for the pipe
-      if (command_index == 0) {
-        close(pipeID[command_index][0]);
-        if (dup2(pipeID[command_index][1], STDOUT_FILENO) == -1) {
-          perror("dup2");
-          _exit(EXIT_FAILURE);
-        }
-      } else if (command_index == pipeline->command_count - 1) {
-        if (dup2(pipeID[command_index - 1][0], STDIN_FILENO) == -1) {
-          perror("dup2");
-          _exit(EXIT_FAILURE);
-        }
-      } else {
-        if (dup2(pipeID[command_index][1], STDOUT_FILENO) == -1 ||
-            dup2(pipeID[command_index - 1][0], STDIN_FILENO) == -1) {
-          perror("dup2");
-          _exit(EXIT_FAILURE);
-        }
-      }
-      for (size_t i = 0; i < num_of_pipes; i++) {
-        close(pipeID[i][0]);
-        close(pipeID[i][1]);
-      }
-
-      // execute_commands handles redirections and the final execution
-      // of the command
-      execute_command(&pipeline->commands[command_index]);
+      // this func will execute the command of the pipeline
+      // will handle the redirection and opening and closing the correct pipes
+      pipeline_child_process(pipeline, command_index, pipeID);
     }
     // Adding the background process to jobs array
     // If the if the pipeline is not a background job we need to wait
@@ -288,15 +274,13 @@ static int execute_pipeline(const struct pipeline *pipeline) {
     }
   }
   // closing all the pipes
-  for (size_t i = 0; i < num_of_pipes; i++) {
-    close(pipeID[i][0]);
-    close(pipeID[i][1]);
-  }
+  close_pipes(pipeID, num_of_pipes);
+
   // if the pipeline is not in the background the the parent needs to wait
   // for the children to finish
   if (pipeline->background != 1) {
     int child_status = 0;
-    for (size_t i = 0; i < pipeline->command_count; i++) {
+    for (int i = 0; i < fork_success; i++) {
       if (waitpid(pids[i], &child_status, 0) == -1)
         result = -1;
       if (child_status == EXIT_FAILURE)

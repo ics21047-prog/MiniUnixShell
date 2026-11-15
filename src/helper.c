@@ -11,11 +11,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-
 void setPWD(void) {
   char path[PATH_BUFFER];
   if (getcwd(path, sizeof(path)) == NULL) {
     perror("getcwd");
+    setenv("PWD", "InvalidPATH", 1);
+    return;
   }
   setenv("PWD", path, 1);
 }
@@ -71,6 +72,21 @@ int change_signal_handler(struct sigaction *sigact, void (*handler)(int),
   }
 
   return 0;
+}
+// returns 0 if success , returns number of opened till failure
+size_t initialize_pipes(int (*pipes)[2], size_t num_of_pipes) {
+  for (size_t i = 0; i < num_of_pipes; i++) {
+    if (pipe(pipes[i]) == -1)
+      return i;
+  }
+  return num_of_pipes;
+}
+
+void close_pipes(int (*pipes)[2], size_t num_of_pipes) {
+  for (size_t i = 0; i < num_of_pipes; i++) {
+    close(pipes[i][0]);
+    close(pipes[i][1]);
+  }
 }
 
 int check_redirections(const struct command *command) {
@@ -133,4 +149,36 @@ void execute_command(const struct command *command) {
   if (execvp(command->argv[0], command->argv) == -1)
     perror("execvp:");
   _exit(EXIT_FAILURE);
+}
+
+void pipeline_child_process(const struct pipeline *pipeline,
+                            size_t command_index, int (*pipeID)[2]) {
+  // checking case where there is no pipe
+  if (pipeline->command_count == 1) {
+    execute_command(&pipeline->commands[command_index]);
+  }
+
+  // Changing the file descriptors for the pipe
+  if (command_index == 0) {
+    if (dup2(pipeID[command_index][1], STDOUT_FILENO) == -1) {
+      perror("dup2");
+      _exit(EXIT_FAILURE);
+    }
+  } else if (command_index == pipeline->command_count - 1) {
+    if (dup2(pipeID[command_index - 1][0], STDIN_FILENO) == -1) {
+      perror("dup2");
+      _exit(EXIT_FAILURE);
+    }
+  } else {
+    if (dup2(pipeID[command_index][1], STDOUT_FILENO) == -1 ||
+        dup2(pipeID[command_index - 1][0], STDIN_FILENO) == -1) {
+      perror("dup2");
+      _exit(EXIT_FAILURE);
+    }
+  }
+  close_pipes(pipeID, pipeline->command_count - 1);
+
+  // execute_commands handles redirections and the final execution
+  // of the command
+  execute_command(&pipeline->commands[command_index]);
 }
